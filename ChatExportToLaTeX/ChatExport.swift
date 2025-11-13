@@ -42,19 +42,46 @@ struct ChatMessage: Decodable {
 }
 
 
+struct ChatPart: Decodable {
+    let text: String
+
+    private struct Obj: Decodable {
+        struct TextObj: Decodable {
+            let value: String?
+        }
+        let text: TextObj?
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+
+        // Old format: just a plain string
+        if let s = try? container.decode(String.self) {
+            self.text = s
+            return
+        }
+
+        // New format: { "text": { "value": "..." } }
+        let obj = try container.decode(Obj.self)
+        self.text = obj.text?.value ?? ""
+    }
+}
+
+
 struct Author: Decodable {
     let role: String   // "user", "assistant", "system", ...
 }
 
 struct ChatContent: Decodable {
     let contentType: String?
-    let parts: [String]?
+    let parts: [ChatPart]?
 
     enum CodingKeys: String, CodingKey {
         case contentType = "content_type"
         case parts
     }
 }
+
 
 // MARK: - Load 1 or many conversations
 
@@ -229,7 +256,7 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
             if let msg = node.message,
                let parts = msg.content?.parts {
 
-                let text = parts.joined(separator: "\n\n")
+                let text = parts.map { $0.text }.joined(separator: "\n\n")
                 if !text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
                     messages.append(msg)
                 }
@@ -248,7 +275,7 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
         out.append("")
 
         if let parts = msg.content?.parts {
-            let rawBody = parts.joined(separator: "\n\n")
+            let rawBody = parts.map { $0.text }.joined(separator: "\n\n")
             let escapedBody = escapeForLaTeXPreservingMath(rawBody)
             out.append(escapedBody)
             out.append("")
