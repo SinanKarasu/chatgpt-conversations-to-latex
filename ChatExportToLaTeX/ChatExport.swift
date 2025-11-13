@@ -4,22 +4,25 @@ import Foundation
 // MARK: - Models matching ChatGPT export JSON
 
 struct ChatConversation: Decodable {
-    let id: String
+    let id: String?                      // was non-optional
     let title: String?
     let createTime: Double?
-    let mapping: [String: ChatNode]
+    let updateTime: Double?
+    let mapping: [String: ChatNode]?     // make this optional too
 
     enum CodingKeys: String, CodingKey {
         case id
         case title
         case createTime = "create_time"
+        case updateTime = "update_time"
         case mapping
     }
 }
 
 struct ChatNode: Decodable {
-    let id: String
+    let id: String?
     let message: ChatMessage?
+    // we ignore parent/children/metadata, they’ll just be discarded
 }
 
 struct ChatMessage: Decodable {
@@ -27,14 +30,17 @@ struct ChatMessage: Decodable {
     let author: Author
     let content: ChatContent?
     let createTime: Double?
+    let updateTime: Double?
 
     enum CodingKeys: String, CodingKey {
         case id
         case author
         case content
         case createTime = "create_time"
+        case updateTime = "update_time"
     }
 }
+
 
 struct Author: Decodable {
     let role: String   // "user", "assistant", "system", ...
@@ -58,8 +64,11 @@ func loadConversations(from url: URL) throws -> [ChatConversation] {
     decoder.keyDecodingStrategy = .useDefaultKeys
 
     // Try array first (conversations.json)
-    if let many = try? decoder.decode([ChatConversation].self, from: data) {
+    do {
+        let many = try decoder.decode([ChatConversation].self, from: data)
         return many
+    } catch {
+        fputs("Array decode failed, trying single conversation. Error was:\n\(error)\n", stderr)
     }
 
     // Fallback: single conversation file
@@ -214,11 +223,17 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
     }
 
     var messages: [ChatMessage] = []
-    for node in convo.mapping.values {
-        if let msg = node.message,
-           let parts = msg.content?.parts,
-           !parts.joined().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            messages.append(msg)
+
+    if let mapping = convo.mapping {
+        for node in mapping.values {
+            if let msg = node.message,
+               let parts = msg.content?.parts {
+
+                let text = parts.joined(separator: "\n\n")
+                if !text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
+                    messages.append(msg)
+                }
+            }
         }
     }
 
