@@ -1,10 +1,3 @@
-//
-//  ChatExport.swift
-//  ChatExportToLaTeX
-//
-//  Created by Sinan Karasu on 11/12/25.
-//
-
 //#!/usr/bin/env swift
 import Foundation
 
@@ -57,13 +50,21 @@ struct ChatContent: Decodable {
     }
 }
 
-// MARK: - JSON loading
+// MARK: - Load 1 or many conversations
 
-func loadConversation(from url: URL) throws -> ChatConversation {
+func loadConversations(from url: URL) throws -> [ChatConversation] {
     let data = try Data(contentsOf: url)
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .useDefaultKeys
-    return try decoder.decode(ChatConversation.self, from: data)
+
+    // Try array first (conversations.json)
+    if let many = try? decoder.decode([ChatConversation].self, from: data) {
+        return many
+    }
+
+    // Fallback: single conversation file
+    let one = try decoder.decode(ChatConversation.self, from: data)
+    return [one]
 }
 
 // MARK: - LaTeX escaping with math preservation
@@ -104,9 +105,7 @@ func escapeForLaTeXPreservingMath(_ input: String) -> String {
 
         switch mode {
         case .text:
-            // Check for start of math
             if s == "$" {
-                // $$...$$ ?
                 if i + 1 < scalars.count, scalars[i + 1] == "$" {
                     mode = .displayDollar
                     result.append("$$")
@@ -127,7 +126,6 @@ func escapeForLaTeXPreservingMath(_ input: String) -> String {
                     result.append("\\[")
                     i += 2
                 } else {
-                    // normal backslash in text: escape it
                     result.append("\\textbackslash{}")
                     i += 1
                 }
@@ -181,9 +179,8 @@ func escapeForLaTeXPreservingMath(_ input: String) -> String {
     return result
 }
 
-// MARK: - Conversation → LaTeX
+// MARK: - Role → header
 
-/// Map roles to "Dear X" headers
 func headerForRole(_ role: String) -> String {
     switch role {
     case "user":
@@ -195,20 +192,18 @@ func headerForRole(_ role: String) -> String {
     }
 }
 
+// MARK: - Conversation → LaTeX
+
 func conversationToLaTeX(_ convo: ChatConversation) -> String {
     var out: [String] = []
 
-    // Preamble
     out.append("""
     % Auto-generated from ChatGPT export
     \\documentclass[12pt]{article}
     \\usepackage{fontspec}
     \\usepackage{amsmath,amssymb}
     \\usepackage[margin=1in]{geometry}
-
-    % Use any font you like here
     \\setmainfont{Helvetica Neue}
-
     \\begin{document}
     """)
 
@@ -218,7 +213,6 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
         out.append("")
     }
 
-    // Collect and sort messages by time
     var messages: [ChatMessage] = []
     for node in convo.mapping.values {
         if let msg = node.message,
@@ -233,10 +227,8 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
     }
 
     for msg in messages {
-        let role = msg.author.role
-        let header = headerForRole(role)
+        let header = headerForRole(msg.author.role)
         let headerLine = "{\\large 🧚‍♀️\\textbf{\(escapeForLaTeXPreservingMath(header))},}"
-
         out.append(headerLine)
         out.append("")
 
@@ -244,46 +236,54 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
             let rawBody = parts.joined(separator: "\n\n")
             let escapedBody = escapeForLaTeXPreservingMath(rawBody)
             out.append(escapedBody)
-            out.append("") // blank line between messages
+            out.append("")
         }
     }
 
-    // Postamble
     out.append("\\end{document}")
-
     return out.joined(separator: "\n")
 }
 
-// MARK: - CLI
+// MARK: - Utils
+
+func sanitizeFileName(_ s: String) -> String {
+    let badChars = CharacterSet(charactersIn: "/:\\?%*|\"<>")
+    let cleaned = s.unicodeScalars.map { badChars.contains($0) ? "_" : Character($0) }
+    let asString = String(cleaned)
+    if asString.isEmpty { return "conversation" }
+    return asString.replacingOccurrences(of: " ", with: "_")
+}
 
 func printUsage() {
     let prog = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "ChatExportToLaTeX"
-    fputs("Usage: \(prog) <conversation.json> [output.tex]\n", stderr)
+    fputs("Usage: \(prog) <conversations.json> <output-directory>\n", stderr)
 }
+
+// MARK: - CLI main
 
 func main() {
     let args = CommandLine.arguments
-    guard args.count >= 2 else {
+    guard args.count >= 3 else {
         printUsage()
         exit(1)
     }
 
-    let inputPath = args[1]
-    let inputURL = URL(fileURLWithPath: inputPath)
-
-    let outputPath: String? = (args.count >= 3) ? args[2] : nil
+    let inputURL = URL(fileURLWithPath: args[1])
+    let outDirPath = args[2]
+    let fm = FileManager.default
+    try? fm.createDirectory(atPath: outDirPath, withIntermediateDirectories: true)
 
     do {
-        let convo = try loadConversation(from: inputURL)
-        let tex = conversationToLaTeX(convo)
+        let convos = try loadConversations(from: inputURL)
+        for (index, convo) in convos.enumerated() {
+            let titleBase = convo.title ?? "conversation_\(index + 1)"
+            let safe = sanitizeFileName(titleBase)
+            let fileName = String(format: "%04d_%@.tex", index + 1, safe)
+            let outURL = URL(fileURLWithPath: outDirPath).appendingPathComponent(fileName)
 
-        if let outPath = outputPath {
-            try tex.write(to: URL(fileURLWithPath: outPath),
-                          atomically: true,
-                          encoding: .utf8)
-        } else {
-            // stdout
-            print(tex)
+            let tex = conversationToLaTeX(convo)
+            try tex.write(to: outURL, atomically: true, encoding: .utf8)
+            print("Wrote \(outURL.path)")
         }
     } catch {
         fputs("Error: \(error)\n", stderr)

@@ -57,7 +57,7 @@
             isEnabled = "YES">
          </CommandLineArgument>
          <CommandLineArgument
-            argument = "~/convos.tex"
+            argument = "~/LaTeXChats"
             isEnabled = "YES">
          </CommandLineArgument>
       </CommandLineArguments>
