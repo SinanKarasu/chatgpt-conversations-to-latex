@@ -220,9 +220,9 @@ func escapeForLaTeXPreservingMath(_ input: String) -> String {
 func headerForRole(_ role: String) -> String {
     switch role {
     case "user":
-        return "Dear Sinan"
-    case "assistant":
         return "Dear Chat"
+    case "assistant":
+        return "Dear Sinan"
     default:
         return "Dear Diary"
     }
@@ -235,11 +235,25 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
 
     out.append("""
     % Auto-generated from ChatGPT export
-    \\documentclass[12pt]{article}
-    \\usepackage{fontspec}
+    \\documentclass{article}
+    \\usepackage{fontspec}    
+    \\directlua{luaotfload.add_fallback
+     ("emojifallback",
+      {
+      "NotoColorEmoji:mode=harf;"
+      }
+    )}
+    \\setmainfont{texgyretermes-regular}[
+    Extension      = .otf ,
+    BoldFont       = texgyretermes-bold,
+    ItalicFont     = texgyretermes-italic,
+    BoldItalicFont = texgyretermes-bolditalic,
+    RawFeature={fallback=emojifallback}
+    ]
     \\usepackage{amsmath,amssymb}
     \\usepackage[margin=1in]{geometry}
-    \\setmainfont{Helvetica Neue}
+    \\usepackage{darkmode}
+    \\enabledarkmode    
     \\begin{document}
     """)
 
