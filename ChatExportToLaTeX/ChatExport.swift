@@ -183,32 +183,44 @@ func headerForRole(_ role: String) -> String {
 
 // MARK: - Conversation → LaTeX
 
+
+func generateMainPreamble() -> String {
+	return """
+	% Auto-generated from ChatGPT export
+	\\documentclass{article}
+	\\usepackage{fontspec}    
+	\\directlua{luaotfload.add_fallback
+	 ("emojifallback",
+	  {
+	  "NotoColorEmoji:mode=harf;"
+	  }
+	)}
+	\\setmainfont{texgyretermes-regular}[
+	Extension      = .otf ,
+	BoldFont       = texgyretermes-bold,
+	ItalicFont     = texgyretermes-italic,
+	BoldItalicFont = texgyretermes-bolditalic,
+	RawFeature={fallback=emojifallback}
+	]
+	\\usepackage{amsmath,amssymb}
+	\\usepackage[margin=1in]{geometry}
+	\\usepackage{darkmode}
+	\\enabledarkmode    
+	\\begin{document}
+	"""
+}
+
+func generateSectionPreamble() -> String {
+	return """
+	%!TEX root =../Main.tex
+	"""
+}
+
+
 func conversationToLaTeX(_ convo: ChatConversation) -> String {
     var out: [String] = []
 
-    out.append("""
-    % Auto-generated from ChatGPT export
-    \\documentclass{article}
-    \\usepackage{fontspec}    
-    \\directlua{luaotfload.add_fallback
-     ("emojifallback",
-      {
-      "NotoColorEmoji:mode=harf;"
-      }
-    )}
-    \\setmainfont{texgyretermes-regular}[
-    Extension      = .otf ,
-    BoldFont       = texgyretermes-bold,
-    ItalicFont     = texgyretermes-italic,
-    BoldItalicFont = texgyretermes-bolditalic,
-    RawFeature={fallback=emojifallback}
-    ]
-    \\usepackage{amsmath,amssymb}
-    \\usepackage[margin=1in]{geometry}
-    \\usepackage{darkmode}
-    \\enabledarkmode    
-    \\begin{document}
-    """)
+    out.append(generateSectionPreamble())
 
     if let title = convo.title {
         let safeTitle = escapeForLaTeXPreservingMath(title)
@@ -249,7 +261,7 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
         }
     }
 
-    out.append("\\end{document}")
+    //out.append("\\end{document}")
     return out.joined(separator: "\n")
 }
 
@@ -282,6 +294,7 @@ func main() {
     let fm = FileManager.default
     try? fm.createDirectory(atPath: outDirPath, withIntermediateDirectories: true)
 	var mainFiles: [String] = []
+	mainFiles.append(generateMainPreamble())
     do {
         let convos = try loadConversations(from: inputURL)
 		let mainURL = URL(fileURLWithPath: outDirPath).appendingPathComponent("main.tex")
@@ -296,6 +309,7 @@ func main() {
 			mainFiles.append("\\include{\(fileName)}")
             print("Wrote \(outURL.path)")
         }
+		mainFiles.append("\\end{document}")
 		let mainList = mainFiles.joined(separator: "\n")
 		try mainList.write(to: mainURL, atomically: true, encoding: String.Encoding.utf8)
     } catch {
