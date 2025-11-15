@@ -267,6 +267,34 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
 
 // MARK: - Utils
 
+/// Convert a conversation title into a filesystem- and LaTeX-safe slug.
+func safeSlug(_ raw: String) -> String {
+	// Trim whitespace
+	var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+	
+	// Remove trailing periods (.)
+	while s.hasSuffix(".") {
+		s.removeLast()
+	}
+	
+	// Replace anything that is NOT a letter, number, or dash with "-"
+	let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-"))
+	s = s.unicodeScalars.map { allowed.contains($0) ? String($0) : "-" }.joined()
+	
+	// Collapse multiple --- into a single -
+	while s.contains("--") {
+		s = s.replacingOccurrences(of: "--", with: "-")
+	}
+	
+	// Trim leading/trailing dashes
+	s = s.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+	
+	// Fallback
+	if s.isEmpty { s = "Untitled" }
+	
+	return s
+}
+
 func sanitizeFileName(_ s: String) -> String {
     let badChars = CharacterSet(charactersIn: "/:\\?%*|\"<>")
     let cleaned = s.unicodeScalars.map { badChars.contains($0) ? "_" : Character($0) }
@@ -279,6 +307,7 @@ func printUsage() {
     let prog = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "ChatExportToLaTeX"
     fputs("Usage: \(prog) <conversations.json> <output-directory>\n", stderr)
 }
+
 
 // MARK: - CLI main
 
@@ -300,13 +329,14 @@ func main() {
 		let mainURL = URL(fileURLWithPath: outDirPath).appendingPathComponent("main.tex")
         for (index, convo) in convos.enumerated() {
             let titleBase = convo.title ?? "conversation_\(index + 1)"
-            let safe = sanitizeFileName(titleBase)
+            //let safe = sanitizeFileName(titleBase)
+			let safe = safeSlug(titleBase)
             let fileName = String(format: "%04d_%@.tex", index + 1, safe)
             let outURL = URL(fileURLWithPath: outDirPath).appendingPathComponent(fileName)
 			//let mainURL = URL(fileURLWithPath: outDirPath).appendingPathComponent(fileName)
-            let tex = conversationToLaTeX(convo)
+			let tex = conversationToLaTeX(convo).removingControlCharacters()
             try tex.write(to: outURL, atomically: true, encoding: String.Encoding.utf8)
-			mainFiles.append("\\include{\(fileName)}")
+			mainFiles.append("\\include{\(fileName.replacingOccurrences(of: ".tex", with: ""))}")
             print("Wrote \(outURL.path)")
         }
 		mainFiles.append("\\end{document}")
@@ -317,6 +347,31 @@ func main() {
         exit(1)
     }
 }
+
+
+extension String {
+	/// Remove unprintable control characters (e.g. U+0014) but
+	/// keep tab, LF, and CR.
+	func removingControlCharacters() -> String {
+		let allowedControls: Set<UInt32> = [0x09, 0x0A, 0x0D] // tab, LF, CR
+		
+		var cleanedScalars = String.UnicodeScalarView()
+		cleanedScalars.reserveCapacity(self.unicodeScalars.count)
+		
+		for scalar in self.unicodeScalars {
+			let v = scalar.value
+			// ASCII control range 0x00–0x1F + DEL(0x7F)
+			if (v <= 0x1F || v == 0x7F), !allowedControls.contains(v) {
+				// skip this scalar (this nukes your U+0014)
+				continue
+			}
+			cleanedScalars.append(scalar)
+		}
+		
+		return String(cleanedScalars)
+	}
+}
+
 
 //main()
 
