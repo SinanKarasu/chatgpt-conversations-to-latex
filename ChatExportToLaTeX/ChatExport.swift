@@ -107,112 +107,65 @@ func loadConversations(from url: URL) throws -> [ChatConversation] {
 
 /// Escape LaTeX specials outside of math regions.
 /// Math regions are: $...$, $$...$$, \(...\), \[...\]
-func escapeForLaTeXPreservingMath(_ input: String) -> String {
-    enum Mode {
-        case text
-        case inlineDollar
-        case displayDollar
-        case inlineParen
-        case displayBracket
-    }
+// MARK: - LaTeX escaping (no math detection, escape all $)
 
-    var result = ""
-    let scalars = Array(input.unicodeScalars)
-    var i = 0
-    var mode: Mode = .text
-
-    func escapeScalar(_ s: UnicodeScalar) -> String {
-        switch s {
-        case "#": return "\\#"
-        case "$": return "\\$"
-        case "%": return "\\%"
-        case "&": return "\\&"
-        case "_": return "\\_"
-        case "{": return "\\{"
-        case "}": return "\\}"
-        case "^": return "\\^{}"
-        case "~": return "\\~{}"
-        default:  return String(s)
-        }
-    }
-
-    while i < scalars.count {
-        let s = scalars[i]
-
-        switch mode {
-        case .text:
-            if s == "$" {
-                if i + 1 < scalars.count, scalars[i + 1] == "$" {
-                    mode = .displayDollar
-                    result.append("$$")
-                    i += 2
-                } else {
-                    mode = .inlineDollar
-                    result.append("$")
-                    i += 1
-                }
-            } else if s == "\\" && i + 1 < scalars.count {
-                let next = scalars[i + 1]
-                if next == "(" {
-                    mode = .inlineParen
-                    result.append("\\(")
-                    i += 2
-                } else if next == "[" {
-                    mode = .displayBracket
-                    result.append("\\[")
-                    i += 2
-                } else {
-                    result.append("\\textbackslash{}")
-                    i += 1
-                }
-            } else {
-                result.append(escapeScalar(s))
-                i += 1
-            }
-
-        case .inlineDollar:
-            if s == "$" {
-                mode = .text
-                result.append("$")
-                i += 1
-            } else {
-                result.append(String(s))
-                i += 1
-            }
-
-        case .displayDollar:
-            if s == "$", i + 1 < scalars.count, scalars[i + 1] == "$" {
-                mode = .text
-                result.append("$$")
-                i += 2
-            } else {
-                result.append(String(s))
-                i += 1
-            }
-
-        case .inlineParen:
-            if s == "\\" && i + 1 < scalars.count, scalars[i + 1] == ")" {
-                mode = .text
-                result.append("\\)")
-                i += 2
-            } else {
-                result.append(String(s))
-                i += 1
-            }
-
-        case .displayBracket:
-            if s == "\\" && i + 1 < scalars.count, scalars[i + 1] == "]" {
-                mode = .text
-                result.append("\\]")
-                i += 2
-            } else {
-                result.append(String(s))
-                i += 1
-            }
-        }
-    }
-
-    return result
+/**
+ Escapes a string so it is safe to drop into LaTeX text mode.
+ 
+ - All LaTeX special characters are escaped.
+ - Every unescaped `$` becomes `\$` (so we don't accidentally enter math mode).
+ - Existing `\$` sequences are left as-is to avoid double-escaping.
+ 
+ This means any *real* math written with `$...$` or `$$...$$` will come out
+ as `\$...\$` and will need to be hand-fixed later, which is acceptable for
+ our usage: there are thousands of dollar signs and very little actual math.
+ */
+func escapeForLaTeXPreservingMath(_ text: String) -> String {
+	var result = String.UnicodeScalarView()
+	let scalars = Array(text.unicodeScalars)
+	var i = 0
+	
+	func appendEscaped(_ s: UnicodeScalar) {
+		switch s {
+		case "$":
+			// Generic rule: treat $ as literal currency/character
+			result.append("\\")
+			result.append("$")
+		case "#", "%", "&", "_", "{", "}":
+			// Simple one-char escapes like \#, \%, \&, \_, \{, \}
+			result.append("\\")
+			result.append(s)
+		case "^":
+			// Use text version to avoid entering math mode
+			"\\textasciicircum{}".unicodeScalars.forEach { result.append($0) }
+		case "~":
+			"\\textasciitilde{}".unicodeScalars.forEach { result.append($0) }
+		case "\\":
+			"\\textbackslash{}".unicodeScalars.forEach { result.append($0) }
+		default:
+			result.append(s)
+		}
+	}
+	
+	while i < scalars.count {
+		let s = scalars[i]
+		
+		// If we see backslash + dollar, assume it's *already* an escaped literal
+		// and copy both characters through unchanged.
+		if s == "\\".unicodeScalars.first!,
+		   i + 1 < scalars.count,
+		   scalars[i + 1] == "$".unicodeScalars.first! {
+			result.append(s)
+			result.append(scalars[i + 1])
+			i += 2
+			continue
+		}
+		
+		appendEscaped(s)
+		i += 1
+	}
+	
+	return String(result)
 }
 
 // MARK: - Role → header
@@ -328,19 +281,23 @@ func main() {
     let outDirPath = args[2]
     let fm = FileManager.default
     try? fm.createDirectory(atPath: outDirPath, withIntermediateDirectories: true)
-
+	var mainFiles: [String] = []
     do {
         let convos = try loadConversations(from: inputURL)
+		let mainURL = URL(fileURLWithPath: outDirPath).appendingPathComponent("main.tex")
         for (index, convo) in convos.enumerated() {
             let titleBase = convo.title ?? "conversation_\(index + 1)"
             let safe = sanitizeFileName(titleBase)
             let fileName = String(format: "%04d_%@.tex", index + 1, safe)
             let outURL = URL(fileURLWithPath: outDirPath).appendingPathComponent(fileName)
-
+			//let mainURL = URL(fileURLWithPath: outDirPath).appendingPathComponent(fileName)
             let tex = conversationToLaTeX(convo)
-            try tex.write(to: outURL, atomically: true, encoding: .utf8)
+            try tex.write(to: outURL, atomically: true, encoding: String.Encoding.utf8)
+			mainFiles.append("\\include{\(fileName)}")
             print("Wrote \(outURL.path)")
         }
+		let mainList = mainFiles.joined(separator: "\n")
+		try mainList.write(to: mainURL, atomically: true, encoding: String.Encoding.utf8)
     } catch {
         fputs("Error: \(error)\n", stderr)
         exit(1)
@@ -348,3 +305,4 @@ func main() {
 }
 
 //main()
+
