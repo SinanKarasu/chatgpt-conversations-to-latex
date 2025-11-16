@@ -237,24 +237,57 @@ func escapeForLaTeXPreservingMath(_ text: String) -> String {
 //}
 
 
-func figureForAttachment(_ attachment: Attachment) -> String? {
-	guard attachment.mimeType?.hasPrefix("image/") == true else { return nil }
+let supportedMimes: Set<String> = ["image/png", "image/jpeg", "image/jpg"]
+
+func figureForAttachment(_ attachment: Attachment,
+						 imageRoot: URL) -> String? {
+	guard
+		let mime = attachment.mimeType,
+		supportedMimes.contains(mime),
+		let pathString = exportedImageFilename(attachment)
+	else {
+		// Skip svg/webp/pbm/missing mime types
+		return nil
+	}
 	
-	guard let filePath = exportedImageFilename(attachment) else { return nil }
+//	let path = imageRoot.appendingPathComponent(pathString).path
+//	guard FileManager.default.fileExists(atPath: path) else {
+//		// Skip if the file isn't actually in images/
+//		return nil
+//	}
 	
+	let relPathForLaTeX = pathString        // e.g. "images/file-...png"
 	let caption = attachment.name.map { escapeForLaTeXPreservingMath($0) } ?? "Image"
 	let labelSlug = safeSlug(caption)
 	
 	return """
 	\\begin{figure}[h!]
 		\\centering
-		\\includegraphics[width=0.9\\textwidth]{\(filePath)}
+		\\includegraphics[width=0.9\\textwidth]{\(relPathForLaTeX)}
 		\\caption{\(caption)}
 		\\label{fig:\(labelSlug)}
 	\\end{figure}
 	"""
 }
 
+//func figureForAttachment(_ attachment: Attachment) -> String? {
+//	guard attachment.mimeType?.hasPrefix("image/") == true else { return nil }
+//	
+//	guard let filePath = exportedImageFilename(attachment) else { return nil }
+//	
+//	let caption = attachment.name.map { escapeForLaTeXPreservingMath($0) } ?? "Image"
+//	let labelSlug = safeSlug(caption)
+//	
+//	return """
+//	\\begin{figure}[h!]
+//		\\centering
+//		\\includegraphics[width=0.9\\textwidth]{\(filePath)}
+//		\\caption{\(caption)}
+//		\\label{fig:\(labelSlug)}
+//	\\end{figure}
+//	"""
+//}
+//
 
 
 
@@ -355,7 +388,7 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
 		// After the body, inject any image attachments as LaTeX figures.
 		if let attachments = msg.metadata?.attachments {
 			for att in attachments {
-				if let fig = figureForAttachment(att) {
+				if let fig = figureForAttachment(att, imageRoot: URL(filePath: "images/")) {
 					out.append(fig)
 					out.append("")
 				}
