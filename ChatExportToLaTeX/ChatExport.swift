@@ -25,21 +25,21 @@ struct ChatNode: Decodable {
     // we ignore parent/children/metadata, they’ll just be discarded
 }
 
-struct ChatMessage: Decodable {
-    let id: String?
-    let author: Author
-    let content: ChatContent?
-    let createTime: Double?
-    let updateTime: Double?
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case author
-        case content
-        case createTime = "create_time"
-        case updateTime = "update_time"
-    }
-}
+//struct ChatMessage: Decodable {
+//    let id: String?
+//    let author: Author
+//    let content: ChatContent?
+//    let createTime: Double?
+//    let updateTime: Double?
+//
+//    enum CodingKeys: String, CodingKey {
+//        case id
+//        case author
+//        case content
+//        case createTime = "create_time"
+//        case updateTime = "update_time"
+//    }
+//}
 
 
 struct ChatPart: Decodable {
@@ -80,6 +80,51 @@ struct ChatContent: Decodable {
         case contentType = "content_type"
         case parts
     }
+}
+
+struct Attachment: Decodable {
+	let id: String?
+	let size: Int?
+	let name: String?
+	let mimeType: String?
+	let width: Int?
+	let height: Int?
+	let source: String?
+	
+	enum CodingKeys: String, CodingKey {
+		case id
+		case size
+		case name
+		case mimeType = "mime_type"
+		case width
+		case height
+		case source
+	}
+}
+
+struct MessageMetadata: Decodable {
+	let attachments: [Attachment]?
+}
+
+
+
+
+struct ChatMessage: Decodable {
+	let id: String?
+	let author: Author
+	let content: ChatContent?
+	let createTime: Double?
+	let updateTime: Double?
+	let metadata: MessageMetadata?      // <-- NEW
+	
+	enum CodingKeys: String, CodingKey {
+		case id
+		case author
+		case content
+		case createTime = "create_time"
+		case updateTime = "update_time"
+		case metadata                   // <-- NEW
+	}
 }
 
 
@@ -168,6 +213,51 @@ func escapeForLaTeXPreservingMath(_ text: String) -> String {
 	return String(result)
 }
 
+//func figureForAttachment(_ attachment: Attachment) -> String? {
+//	guard
+//		let name = attachment.name,
+//		let mime = attachment.mimeType,
+//		mime.hasPrefix("image/")
+//	else {
+//		return nil
+//	}
+//	
+//	let safeFile = latexSafePath(name)
+//	let labelSlug = safeSlug(baseName(name))
+//	
+//	// You can tweak caption/width here once you see it on paper.
+//	return """
+//	\\begin{figure}[h!] % Optional: creates a floating figure environment
+//		\\centering % Centers the image
+//		\\includegraphics[width=0.9\\textwidth]{\(safeFile)} % Include the image
+//		\\caption{\(escapeForLaTeXPreservingMath(baseName(name)))} % Add a caption
+//		\\label{fig:\(labelSlug)} % Add a label for cross–referencing
+//	\\end{figure}
+//	"""
+//}
+
+
+func figureForAttachment(_ attachment: Attachment) -> String? {
+	guard attachment.mimeType?.hasPrefix("image/") == true else { return nil }
+	
+	guard let filePath = exportedImageFilename(attachment) else { return nil }
+	
+	let caption = attachment.name.map { escapeForLaTeXPreservingMath($0) } ?? "Image"
+	let labelSlug = safeSlug(caption)
+	
+	return """
+	\\begin{figure}[h!]
+		\\centering
+		\\includegraphics[width=0.9\\textwidth]{\(filePath)}
+		\\caption{\(caption)}
+		\\label{fig:\(labelSlug)}
+	\\end{figure}
+	"""
+}
+
+
+
+
 // MARK: - Role → header
 
 func headerForRole(_ role: String) -> String {
@@ -188,6 +278,8 @@ func generateMainPreamble() -> String {
 	return """
 	% Auto-generated from ChatGPT export
 	\\documentclass{article}
+	\\usepackage{graphicx} % Load the graphicx package
+
 	\\usepackage{fontspec}    
 	\\directlua{luaotfload.add_fallback
 	 ("emojifallback",
@@ -207,6 +299,7 @@ func generateMainPreamble() -> String {
 	\\usepackage{darkmode}
 	\\enabledarkmode    
 	\\begin{document}
+	\\graphicspath{{images/}}
 	"""
 }
 
@@ -259,6 +352,15 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
             out.append(escapedBody)
             out.append("")
         }
+		// After the body, inject any image attachments as LaTeX figures.
+		if let attachments = msg.metadata?.attachments {
+			for att in attachments {
+				if let fig = figureForAttachment(att) {
+					out.append(fig)
+					out.append("")
+				}
+			}
+		}
     }
 
     //out.append("\\end{document}")
@@ -266,6 +368,62 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
 }
 
 // MARK: - Utils
+
+
+func extForMime(_ mime: String?) -> String {
+	guard let mime = mime else { return "png" }
+	if mime == "image/jpeg" { return "jpg" }
+	if mime == "image/jpg"  { return "jpg" }
+	if mime == "image/png"  { return "png" }
+	if mime == "image/gif"  { return "gif" }
+	// default:
+	return "png"
+}
+
+
+//func exportedImageFilename(_ attachment: Attachment) -> String? {
+//	guard let id = attachment.id else { return nil }
+//	let ext = extForMime(attachment.mimeType)
+//	return "images/\(id)-sanitized.\(ext)"
+//}
+
+func exportedImageFilename(_ attachment: Attachment) -> String? {
+	guard let id = attachment.id else { return nil }
+	
+	// file_0000... -> sanitized naming
+	if id.hasPrefix("file_") {
+		let ext = extForMime(attachment.mimeType)
+		return "images/\(id)-sanitized.\(ext)"
+	}
+	
+	// file-XYZ... -> unsanitized, original name appended
+	if id.hasPrefix("file-") {
+		if let name = attachment.name {
+			// name already includes the extension, e.g. "Screenshot ....png"
+			return "images/\(id)-\(name)"
+		} else {
+			let ext = extForMime(attachment.mimeType)
+			return "images/\(id).\(ext)" // fallback
+		}
+	}
+	
+	// Unknown pattern
+	return nil
+}
+
+
+/// Strip extension from a filename.
+func baseName(_ name: String) -> String {
+	return (name as NSString).deletingPathExtension
+}
+
+/// Sanitize an image filename for LaTeX.
+/// We keep dots and slashes, but escape LaTeX specials.
+func latexSafePath(_ raw: String) -> String {
+	// Escape standard LaTeX specials but leave . and / alone.
+	// Reuse your existing text escaper, it doesn't touch . or /.
+	return escapeForLaTeXPreservingMath(raw)
+}
 
 /// Convert a conversation title into a filesystem- and LaTeX-safe slug.
 func safeSlug(_ raw: String) -> String {
