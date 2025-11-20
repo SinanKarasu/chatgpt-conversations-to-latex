@@ -19,6 +19,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		F701EC6D2ECFD756003423FC /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		F701EC6E2ECFD772003423FC /* USER_GUIDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = USER_GUIDE.md; sourceTree = "<group>"; };
 		F7FEE7BE2EC571C7001746E6 /* ChatExportToLaTeX */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = ChatExportToLaTeX; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -44,8 +46,10 @@
 		F7FEE7B52EC571C7001746E6 = {
 			isa = PBXGroup;
 			children = (
+				F701EC6D2ECFD756003423FC /* README.md */,
 				F7FEE7C02EC571C7001746E6 /* ChatExportToLaTeX */,
 				F7FEE7BF2EC571C7001746E6 /* Products */,
+				F701EC6E2ECFD772003423FC /* USER_GUIDE.md */,
 			);
 			sourceTree = "<group>";
 		};

@@ -1,0 +1,17 @@
+# Xcode
+DerivedData/
+build/
+*.xcworkspace
+xcuserdata/
+
+# LaTeX outputs
+*.pdf
+*.aux
+*.log
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+
+# Misc
+.DS_Store

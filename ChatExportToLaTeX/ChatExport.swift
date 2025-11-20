@@ -249,7 +249,7 @@ func figureForAttachment(_ attachment: Attachment,
 		// Skip svg/webp/pbm/missing mime types
 		return nil
 	}
-	
+	// TODO:
 //	let path = imageRoot.appendingPathComponent(pathString).path
 //	guard FileManager.default.fileExists(atPath: path) else {
 //		// Skip if the file isn't actually in images/
