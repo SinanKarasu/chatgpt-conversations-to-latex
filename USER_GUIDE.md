@@ -1,44 +1,104 @@
-## Suggested `USER_GUIDE.md`
+# ChatGPT Conversations → LaTeX
 
-This is a more hand-holding walkthrough.
-
-```markdown
-# ChatGPT Conversations → LaTeX → DOCX → Collabora / Pages
-
-This guide walks you through the entire workflow:
-
-1. Exporting your conversations from ChatGPT
-2. Running the Swift converter
-3. Getting a `main.tex` book file
-4. Converting that to DOCX with pandoc
-5. Opening the result in Collabora Office and Apple Pages
-
----
+This guide covers the conversion of a ChatGPT data export into a LaTeX book.
 
 ## 1. Export from ChatGPT
 
-1. In ChatGPT, request a data export (or download a single-conversation JSON).
-2. You’ll get a `.zip` file that contains `conversations.json` (and possibly media).
-3. Extract the zip somewhere convenient, e.g. `~/Downloads/chatgpt-export/`.
+Request a data export and download the resulting ZIP file. Extract it. Current
+large exports may contain `conversations-000.json`, `conversations-001.json`,
+and so on, plus `export_manifest.json`; older exports contain one
+`conversations.json`.
 
-Make sure you know the full path to `conversations.json`.
-
----
+Keep the original ZIP unchanged so it remains a reference copy.
 
 ## 2. Run the converter
 
-From Terminal:
+Using a standalone build:
 
 ```bash
-cd /path/to/chatgpt-conversations-to-latex
+ChatExportToLaTeX \
+  /path/to/extracted-export \
+  /path/to/ExportedLaTeX \
+  --user-name "Your Name"
+```
 
-# If you built a standalone binary:
-./chatgpt-conversations-to-latex \
-  ~/Downloads/chatgpt-export/conversations.json \
-  ./ExportedLaTeX
+Or run directly through Swift Package Manager:
 
-It is recommended that you put all the media into a folder in the target folder named images/
+```bash
+swift run ChatExportToLaTeX \
+  /path/to/extracted-export \
+  /path/to/ExportedLaTeX \
+  --user-name "Your Name"
+```
 
-so images hould be in
-./ExportedLaTeX/images
-in the above example.
+Pass the extracted export directory to process every shard. A direct path to a
+single JSON file is still accepted when only that file should be converted.
+
+The output directory will contain `main.tex` and one numbered `.tex` file per
+conversation. If `--user-name` is omitted, assistant messages use the neutral
+salutation “Dear User.” The name is supplied locally and is not inferred from
+email addresses or other account identifiers in the export.
+
+## 3. Images
+
+For current exports, supported PNG and JPEG `.dat` assets are copied and given
+usable extensions automatically. The result looks like:
+
+```text
+ExportedLaTeX/
+├── main.tex
+├── 0001_Conversation-title.tex
+└── images/
+```
+
+Supported attachments are referenced from the generated conversation files.
+For a legacy single-file export, an existing manually prepared `images`
+directory remains compatible.
+
+## 4. Math and code handling
+
+The converter preserves complete ChatGPT math regions written as `\(...\)`,
+`\[...\]`, `$...$`, or `$$...$$`. Unmatched delimiters and ordinary currency
+such as `$5` are emitted as text, preventing one malformed message from
+leaking math mode into the rest of the document.
+
+Inline backtick code and fenced code blocks are protected before math is
+recognized, so Swift interpolation such as `\(value)` remains code.
+
+## 5. Build the PDF
+
+From the generated output directory:
+
+```bash
+lualatex main.tex
+lualatex main.tex
+```
+
+The generated `main.tex` also selects LuaLaTeX automatically when opened in
+TeXShop. If the file was already open while it was regenerated, close and
+reopen it before typesetting so TeXShop rereads the engine directive.
+
+The second pass resolves cross-file references and the table of contents when
+those are present.
+
+## 6. Build a DOCX
+
+From the generated output directory, Pandoc can convert the generated master
+file directly:
+
+```bash
+pandoc main.tex -o main.docx
+```
+
+The resulting `main.docx` can be opened in Apple Pages, Microsoft Word, or
+Collabora Office. To also extract referenced media into a separate directory:
+
+```bash
+pandoc main.tex -o main.docx --extract-media=media
+```
+
+## 7. Run the tests
+
+```bash
+swift test
+```

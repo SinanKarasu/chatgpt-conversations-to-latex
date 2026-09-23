@@ -128,7 +128,25 @@ struct ChatMessage: Decodable {
 }
 
 
-// MARK: - Load 1 or many conversations
+// MARK: - Load an export or 1 conversation file
+
+struct ChatExport {
+	let conversations: [ChatConversation]
+	let sourceDirectory: URL
+	let assetFileNames: [String: String]
+}
+
+private struct ExportManifest: Decodable {
+	struct LogicalFile: Decodable {
+		let files: [String]
+	}
+
+	let logicalFiles: [String: LogicalFile]
+
+	enum CodingKeys: String, CodingKey {
+		case logicalFiles = "logical_files"
+	}
+}
 
 func loadConversations(from url: URL) throws -> [ChatConversation] {
     let data = try Data(contentsOf: url)
@@ -148,24 +166,80 @@ func loadConversations(from url: URL) throws -> [ChatConversation] {
     return [one]
 }
 
-// MARK: - LaTeX escaping with math preservation
+func conversationFiles(in exportDirectory: URL) throws -> [URL] {
+	let fileManager = FileManager.default
+	let manifestURL = exportDirectory.appendingPathComponent("export_manifest.json")
 
-/// Escape LaTeX specials outside of math regions.
-/// Math regions are: $...$, $$...$$, \(...\), \[...\]
-// MARK: - LaTeX escaping (no math detection, escape all $)
+	if fileManager.fileExists(atPath: manifestURL.path) {
+		let data = try Data(contentsOf: manifestURL)
+		let manifest = try JSONDecoder().decode(ExportManifest.self, from: data)
+		if let logicalFile = manifest.logicalFiles["conversations.json"] {
+			return logicalFile.files.map { exportDirectory.appendingPathComponent($0) }
+		}
+	}
 
-/**
- Escapes a string so it is safe to drop into LaTeX text mode.
- 
- - All LaTeX special characters are escaped.
- - Every unescaped `$` becomes `\$` (so we don't accidentally enter math mode).
- - Existing `\$` sequences are left as-is to avoid double-escaping.
- 
- This means any *real* math written with `$...$` or `$$...$$` will come out
- as `\$...\$` and will need to be hand-fixed later, which is acceptable for
- our usage: there are thousands of dollar signs and very little actual math.
- */
-func escapeForLaTeXPreservingMath(_ text: String) -> String {
+	let legacyURL = exportDirectory.appendingPathComponent("conversations.json")
+	if fileManager.fileExists(atPath: legacyURL.path) {
+		return [legacyURL]
+	}
+
+	let shardURLs = try fileManager.contentsOfDirectory(
+		at: exportDirectory,
+		includingPropertiesForKeys: nil,
+		options: [.skipsHiddenFiles]
+	).filter {
+		$0.lastPathComponent.hasPrefix("conversations-") && $0.pathExtension == "json"
+	}.sorted {
+		$0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+	}
+
+	guard !shardURLs.isEmpty else {
+		throw CocoaError(.fileNoSuchFile, userInfo: [
+			NSFilePathErrorKey: exportDirectory.path,
+			NSLocalizedDescriptionKey: "No conversations.json or conversations-###.json files were found."
+		])
+	}
+	return shardURLs
+}
+
+func loadChatExport(from inputURL: URL) throws -> ChatExport {
+	var isDirectory: ObjCBool = false
+	guard FileManager.default.fileExists(atPath: inputURL.path, isDirectory: &isDirectory) else {
+		throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: inputURL.path])
+	}
+
+	let sourceDirectory = isDirectory.boolValue
+		? inputURL
+		: inputURL.deletingLastPathComponent()
+	let files = isDirectory.boolValue
+		? try conversationFiles(in: inputURL)
+		: [inputURL]
+
+	var conversations: [ChatConversation] = []
+	for file in files {
+		conversations.append(contentsOf: try loadConversations(from: file))
+	}
+
+	let namesURL = sourceDirectory.appendingPathComponent("conversation_asset_file_names.json")
+	let assetFileNames: [String: String]
+	if FileManager.default.fileExists(atPath: namesURL.path) {
+		let data = try Data(contentsOf: namesURL)
+		assetFileNames = try JSONDecoder().decode([String: String].self, from: data)
+	} else {
+		assetFileNames = [:]
+	}
+
+	return ChatExport(
+		conversations: conversations,
+		sourceDirectory: sourceDirectory,
+		assetFileNames: assetFileNames
+	)
+}
+
+// MARK: - LaTeX rendering
+
+/// Escape content that must remain in LaTeX text mode.
+private func escapePlainTextForLaTeX(_ text: String) -> String {
 	var result = String.UnicodeScalarView()
 	let scalars = Array(text.unicodeScalars)
 	var i = 0
@@ -195,8 +269,7 @@ func escapeForLaTeXPreservingMath(_ text: String) -> String {
 	while i < scalars.count {
 		let s = scalars[i]
 		
-		// If we see backslash + dollar, assume it's *already* an escaped literal
-		// and copy both characters through unchanged.
+		// Preserve an explicitly escaped literal dollar without double-escaping it.
 		if s == "\\".unicodeScalars.first!,
 		   i + 1 < scalars.count,
 		   scalars[i + 1] == "$".unicodeScalars.first! {
@@ -211,6 +284,351 @@ func escapeForLaTeXPreservingMath(_ text: String) -> String {
 	}
 	
 	return String(result)
+}
+
+/// Escape prose while leaving complete LaTeX math spans intact.
+///
+/// Supported delimiters are `\(...\)`, `\[...\]`, `$...$`, and `$$...$$`.
+/// An incomplete delimiter is escaped as ordinary prose instead of leaking an
+/// unterminated math mode into the rest of the generated document.
+func escapeForLaTeXPreservingMath(_ text: String) -> String {
+	let characters = Array(text)
+	var output = ""
+	var textStart = 0
+	var index = 0
+
+	func matches(_ delimiter: [Character], at position: Int) -> Bool {
+		guard position >= 0, position + delimiter.count <= characters.count else {
+			return false
+		}
+		return Array(characters[position ..< position + delimiter.count]) == delimiter
+	}
+
+	func isEscaped(at position: Int) -> Bool {
+		guard position > 0 else { return false }
+		var backslashCount = 0
+		var cursor = position - 1
+		while cursor >= 0, characters[cursor] == "\\" {
+			backslashCount += 1
+			if cursor == 0 { break }
+			cursor -= 1
+		}
+		return backslashCount.isMultiple(of: 2) == false
+	}
+
+	func closingDelimiter(
+		_ delimiter: [Character],
+		startingAt start: Int,
+		allowNewlines: Bool
+	) -> Int? {
+		var cursor = start
+		while cursor < characters.count {
+			if !allowNewlines, characters[cursor].isNewline {
+				return nil
+			}
+			if matches(delimiter, at: cursor), !isEscaped(at: cursor) {
+				return cursor
+			}
+			cursor += 1
+		}
+		return nil
+	}
+
+	func dollarRunLength(at position: Int) -> Int {
+		var cursor = position
+		while cursor < characters.count, characters[cursor] == "$" {
+			cursor += 1
+		}
+		return cursor - position
+	}
+
+	func canOpenDoubleDollar(at position: Int) -> Bool {
+		let previous = position > 0 ? characters[position - 1] : nil
+		let contentStart = position + 2
+		guard contentStart < characters.count else { return false }
+
+		// In shells, `$$` is the current process ID. In particular, never
+		// interpret assignments such as `pid=$$` as display mathematics.
+		if previous == "=" || previous?.isLetter == true || previous?.isNumber == true
+			|| previous == "_" || previous == "$" {
+			return false
+		}
+
+		let next = characters[contentStart]
+		if !next.isWhitespace {
+			return true
+		}
+
+		// Also support the common Markdown form with `$$` alone on a line.
+		guard next.isNewline else { return false }
+		var cursor = position - 1
+		while cursor >= 0, !characters[cursor].isNewline {
+			guard characters[cursor].isWhitespace else { return false }
+			if cursor == 0 { break }
+			cursor -= 1
+		}
+		return true
+	}
+
+	func dollarAppearsInCodeLikeLine(at position: Int) -> Bool {
+		var lineStart = position
+		while lineStart > 0, !characters[lineStart - 1].isNewline {
+			lineStart -= 1
+		}
+		var lineEnd = position
+		while lineEnd < characters.count, !characters[lineEnd].isNewline {
+			lineEnd += 1
+		}
+
+		let line = String(characters[lineStart ..< lineEnd])
+		return line.contains("$(")
+			|| line.contains("${")
+			|| line.contains("[$]")
+			|| line.contains("[^$]")
+	}
+
+	func closingDoubleDollar(startingAt start: Int) -> Int? {
+		var cursor = start
+		while cursor < characters.count {
+			if characters[cursor] == "$" {
+				let runLength = dollarRunLength(at: cursor)
+				if runLength == 2, !isEscaped(at: cursor) {
+					return cursor
+				}
+				cursor += runLength
+				continue
+			}
+			cursor += 1
+		}
+		return nil
+	}
+
+	func closingSingleDollar(startingAt start: Int) -> Int? {
+		guard start < characters.count,
+			  !characters[start].isWhitespace,
+			  characters[start] != "$" else {
+			return nil
+		}
+
+		var cursor = start
+		while cursor < characters.count {
+			if characters[cursor].isNewline {
+				return nil
+			}
+
+			if characters[cursor] == "$", !isEscaped(at: cursor) {
+				let previous = characters[cursor - 1]
+				let next = cursor + 1 < characters.count ? characters[cursor + 1] : nil
+				let followedByWord = next?.isLetter == true || next?.isNumber == true
+				if !previous.isWhitespace, previous != "$", next != "$", !followedByWord {
+					let content = String(characters[start ..< cursor])
+					let containsUnsafeControl = (start ..< cursor).contains { position in
+						let character = characters[position]
+						return (character == "%" || character == "#" || character == "&")
+							&& !isEscaped(at: position)
+					}
+					let resemblesShell = content.contains(" | ")
+						|| content.contains(" > ")
+						|| content.contains(";")
+						|| content.contains("\\n")
+					guard !containsUnsafeControl, !resemblesShell else {
+						return nil
+					}
+					return cursor
+				}
+				// TeX would close at this dollar even when our prose/math
+				// heuristics reject it. Never search past it for a later close.
+				return nil
+			}
+
+			cursor += 1
+		}
+		return nil
+	}
+
+	func appendText(through end: Int) {
+		guard textStart < end else { return }
+		output += escapePlainTextForLaTeX(String(characters[textStart ..< end]))
+	}
+
+	func appendMath(from start: Int, through end: Int) {
+		appendText(through: start)
+		output += String(characters[start ..< end])
+		index = end
+		textStart = end
+	}
+
+	func resemblesRegularExpression(from start: Int, to end: Int) -> Bool {
+		let content = String(characters[start ..< end])
+		return content.contains("[[:")
+			|| content.contains(":]]")
+			|| content.contains("[^")
+			|| content.contains(".*")
+			|| content.contains("\\+")
+			|| content.contains("\\*")
+	}
+
+	func containsNestedMathOpening(from start: Int, to end: Int) -> Bool {
+		let content = String(characters[start ..< end])
+		return content.contains("\\(") || content.contains("\\[")
+	}
+
+	while index < characters.count {
+		if characters[index] == "$" {
+			let runLength = dollarRunLength(at: index)
+			if runLength > 2 {
+				index += runLength
+				continue
+			}
+			if dollarAppearsInCodeLikeLine(at: index) {
+				index += runLength
+				continue
+			}
+		}
+
+		if matches(["\\", "("], at: index), !isEscaped(at: index),
+		   let close = closingDelimiter(["\\", ")"], startingAt: index + 2, allowNewlines: false),
+		   !resemblesRegularExpression(from: index + 2, to: close),
+		   !containsNestedMathOpening(from: index + 2, to: close) {
+			appendMath(from: index, through: close + 2)
+			continue
+		}
+
+		if matches(["\\", "["], at: index), !isEscaped(at: index),
+		   let close = closingDelimiter(["\\", "]"], startingAt: index + 2, allowNewlines: true),
+		   !resemblesRegularExpression(from: index + 2, to: close),
+		   !containsNestedMathOpening(from: index + 2, to: close) {
+			appendMath(from: index, through: close + 2)
+			continue
+		}
+
+		if matches(["$", "$"], at: index), !isEscaped(at: index),
+		   canOpenDoubleDollar(at: index),
+		   let close = closingDoubleDollar(startingAt: index + 2) {
+			appendMath(from: index, through: close + 2)
+			continue
+		}
+
+		if characters[index] == "$", !isEscaped(at: index),
+		   (index == 0 || characters[index - 1] != "$"),
+		   let close = closingSingleDollar(startingAt: index + 1) {
+			appendMath(from: index, through: close + 1)
+			continue
+		}
+
+		index += 1
+	}
+
+	appendText(through: characters.count)
+	return output
+}
+
+/// Render inline Markdown code separately so code containing `$`, `\(`, or
+/// Swift interpolation is never mistaken for mathematics.
+private func renderInlineCodeAndMath(_ text: String) -> String {
+	let characters = Array(text)
+	var output = ""
+	var textStart = 0
+	var index = 0
+
+	func backtickRunLength(at position: Int) -> Int {
+		var cursor = position
+		while cursor < characters.count, characters[cursor] == "`" {
+			cursor += 1
+		}
+		return cursor - position
+	}
+
+	while index < characters.count {
+		guard characters[index] == "`" else {
+			index += 1
+			continue
+		}
+
+		let delimiterLength = backtickRunLength(at: index)
+		var close = index + delimiterLength
+		while close < characters.count {
+			if characters[close].isNewline {
+				break
+			}
+			if characters[close] == "`",
+			   backtickRunLength(at: close) == delimiterLength {
+				break
+			}
+			close += 1
+		}
+
+		guard close < characters.count,
+			  characters[close] == "`",
+			  backtickRunLength(at: close) == delimiterLength else {
+			index += delimiterLength
+			continue
+		}
+
+		output += escapeForLaTeXPreservingMath(String(characters[textStart ..< index]))
+		let codeStart = index + delimiterLength
+		let code = String(characters[codeStart ..< close])
+		output += "\\texttt{\(escapePlainTextForLaTeX(code))}"
+
+		index = close + delimiterLength
+		textStart = index
+	}
+
+	output += escapeForLaTeXPreservingMath(String(characters[textStart...]))
+	return output
+}
+
+/// Render a ChatGPT message body, protecting fenced code before recognizing
+/// inline code and math. Markdown styling is intentionally otherwise left as
+/// plain text, matching the converter's existing behavior.
+func renderChatBodyToLaTeX(_ text: String) -> String {
+	let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+	var renderedSections: [String] = []
+	var proseLines: [String] = []
+	var codeLines: [String] = []
+	var activeFence: String?
+
+	func fenceMarker(in line: String) -> String? {
+		let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
+		if trimmed.hasPrefix("```") { return "```" }
+		if trimmed.hasPrefix("~~~") { return "~~~" }
+		return nil
+	}
+
+	func flushProse() {
+		guard !proseLines.isEmpty else { return }
+		renderedSections.append(renderInlineCodeAndMath(proseLines.joined(separator: "\n")))
+		proseLines.removeAll(keepingCapacity: true)
+	}
+
+	func flushCode() {
+		let code = codeLines.joined(separator: "\n")
+		renderedSections.append("\\begin{Verbatim}\n\(code)\n\\end{Verbatim}")
+		codeLines.removeAll(keepingCapacity: true)
+	}
+
+	for line in lines {
+		if let fence = activeFence {
+			if fenceMarker(in: line) == fence {
+				flushCode()
+				activeFence = nil
+			} else {
+				codeLines.append(line)
+			}
+		} else if let fence = fenceMarker(in: line) {
+			flushProse()
+			activeFence = fence
+		} else {
+			proseLines.append(line)
+		}
+	}
+
+	if activeFence != nil {
+		flushCode()
+	}
+	flushProse()
+
+	return renderedSections.joined(separator: "\n")
 }
 
 //func figureForAttachment(_ attachment: Attachment) -> String? {
@@ -239,12 +657,15 @@ func escapeForLaTeXPreservingMath(_ text: String) -> String {
 
 let supportedMimes: Set<String> = ["image/png", "image/jpeg", "image/jpg"]
 
-func figureForAttachment(_ attachment: Attachment,
-						 imageRoot: URL) -> String? {
+func figureForAttachment(
+	_ attachment: Attachment,
+	resolvedImagePaths: [String: String] = [:]
+) -> String? {
 	guard
 		let mime = attachment.mimeType,
 		supportedMimes.contains(mime),
-		let pathString = exportedImageFilename(attachment)
+		let pathString = attachment.id.flatMap({ resolvedImagePaths[$0] })
+			?? exportedImageFilename(attachment)
 	else {
 		// Skip svg/webp/pbm/missing mime types
 		return nil
@@ -293,12 +714,12 @@ func figureForAttachment(_ attachment: Attachment,
 
 // MARK: - Role → header
 
-func headerForRole(_ role: String) -> String {
+func headerForRole(_ role: String, userName: String) -> String {
     switch role {
     case "user":
         return "Dear Chat"
     case "assistant":
-        return "Dear Sinan"
+        return "Dear \(userName)"
     default:
         return "Dear Diary"
     }
@@ -308,8 +729,8 @@ func headerForRole(_ role: String) -> String {
 
 
 func generateMainPreamble() -> String {
-	return """
-	% Auto-generated from ChatGPT export
+		return "% !TEX program = lualatex\n" + """
+		% Auto-generated from ChatGPT export
 	\\documentclass{article}
 	\\usepackage{graphicx} % Load the graphicx package
 
@@ -328,6 +749,8 @@ func generateMainPreamble() -> String {
 	RawFeature={fallback=emojifallback}
 	]
 	\\usepackage{amsmath,amssymb}
+	\\usepackage{cancel}
+	\\usepackage{fancyvrb}
 	\\usepackage[margin=1in]{geometry}
 	\\usepackage{darkmode}
 	\\enabledarkmode    
@@ -343,7 +766,11 @@ func generateSectionPreamble() -> String {
 }
 
 
-func conversationToLaTeX(_ convo: ChatConversation) -> String {
+func conversationToLaTeX(
+	_ convo: ChatConversation,
+	userName: String,
+	resolvedImagePaths: [String: String] = [:]
+) -> String {
     var out: [String] = []
 
     out.append(generateSectionPreamble())
@@ -374,21 +801,23 @@ func conversationToLaTeX(_ convo: ChatConversation) -> String {
     }
 
     for msg in messages {
-        let header = headerForRole(msg.author.role)
+        let header = headerForRole(msg.author.role, userName: userName)
         let headerLine = "{\\large 🧚‍♀️\\textbf{\(escapeForLaTeXPreservingMath(header))},}"
         out.append(headerLine)
         out.append("")
 
         if let parts = msg.content?.parts {
             let rawBody = parts.map { $0.text }.joined(separator: "\n\n")
-            let escapedBody = escapeForLaTeXPreservingMath(rawBody)
-            out.append(escapedBody)
+            out.append(renderChatBodyToLaTeX(rawBody))
             out.append("")
         }
 		// After the body, inject any image attachments as LaTeX figures.
 		if let attachments = msg.metadata?.attachments {
 			for att in attachments {
-				if let fig = figureForAttachment(att, imageRoot: URL(filePath: "images/")) {
+				if let fig = figureForAttachment(
+					att,
+					resolvedImagePaths: resolvedImagePaths
+				) {
 					out.append(fig)
 					out.append("")
 				}
@@ -444,6 +873,82 @@ func exportedImageFilename(_ attachment: Attachment) -> String? {
 	return nil
 }
 
+struct PreparedImages {
+	let relativePathsByAttachmentID: [String: String]
+	let copiedCount: Int
+	let missingCount: Int
+}
+
+/// Materialize the opaque `.dat` assets used by current ChatGPT exports as
+/// ordinary PNG/JPEG files that `graphicx` can load.
+func prepareImages(
+	for export: ChatExport,
+	in outputDirectory: URL
+) throws -> PreparedImages {
+	let fileManager = FileManager.default
+	var imageAttachmentsByID: [String: Attachment] = [:]
+
+	for conversation in export.conversations {
+		guard let mapping = conversation.mapping else { continue }
+		for node in mapping.values {
+			for attachment in node.message?.metadata?.attachments ?? [] {
+				guard let id = attachment.id,
+					  let mime = attachment.mimeType,
+					  supportedMimes.contains(mime) else {
+					continue
+				}
+				imageAttachmentsByID[id] = attachment
+			}
+		}
+	}
+
+	guard !export.assetFileNames.isEmpty, !imageAttachmentsByID.isEmpty else {
+		return PreparedImages(
+			relativePathsByAttachmentID: [:],
+			copiedCount: 0,
+			missingCount: 0
+		)
+	}
+
+	let imagesDirectory = outputDirectory.appendingPathComponent("images", isDirectory: true)
+	try fileManager.createDirectory(
+		at: imagesDirectory,
+		withIntermediateDirectories: true
+	)
+
+	var relativePaths: [String: String] = [:]
+	var copiedCount = 0
+	var missingCount = 0
+
+	for (id, attachment) in imageAttachmentsByID.sorted(by: { $0.key < $1.key }) {
+		let opaqueFileName = "\(id).dat"
+		guard export.assetFileNames[opaqueFileName] != nil else {
+			missingCount += 1
+			continue
+		}
+
+		let sourceURL = export.sourceDirectory.appendingPathComponent(opaqueFileName)
+		guard fileManager.fileExists(atPath: sourceURL.path) else {
+			missingCount += 1
+			continue
+		}
+
+		let destinationName = "\(id).\(extForMime(attachment.mimeType))"
+		let destinationURL = imagesDirectory.appendingPathComponent(destinationName)
+		if !fileManager.fileExists(atPath: destinationURL.path) {
+			try fileManager.copyItem(at: sourceURL, to: destinationURL)
+			copiedCount += 1
+		}
+		relativePaths[id] = "images/\(destinationName)"
+	}
+
+	return PreparedImages(
+		relativePathsByAttachmentID: relativePaths,
+		copiedCount: copiedCount,
+		missingCount: missingCount
+	)
+}
+
 
 /// Strip extension from a filename.
 func baseName(_ name: String) -> String {
@@ -494,9 +999,88 @@ func sanitizeFileName(_ s: String) -> String {
     return asString.replacingOccurrences(of: " ", with: "_")
 }
 
-func printUsage() {
+struct CommandLineOptions {
+	let inputURL: URL
+	let outputDirectoryURL: URL
+	let userName: String
+}
+
+enum CommandLineError: LocalizedError {
+	case missingArguments
+	case missingOptionValue(String)
+	case unexpectedArgument(String)
+	case emptyUserName
+
+	var errorDescription: String? {
+		switch self {
+		case .missingArguments:
+			return "An export directory or input JSON file and an output directory are required."
+		case .missingOptionValue(let option):
+			return "Missing value for \(option)."
+		case .unexpectedArgument(let argument):
+			return "Unexpected argument: \(argument)"
+		case .emptyUserName:
+			return "--user-name cannot be empty."
+		}
+	}
+}
+
+func parseCommandLine(_ arguments: [String]) throws -> CommandLineOptions {
+	var positionalArguments: [String] = []
+	var userName = "User"
+	var index = 1
+
+	while index < arguments.count {
+		let argument = arguments[index]
+
+		if argument == "--user-name" {
+			guard index + 1 < arguments.count else {
+				throw CommandLineError.missingOptionValue(argument)
+			}
+			userName = arguments[index + 1]
+			index += 2
+			continue
+		}
+
+		if argument.hasPrefix("--user-name=") {
+			userName = String(argument.dropFirst("--user-name=".count))
+			index += 1
+			continue
+		}
+
+		if argument.hasPrefix("-") {
+			throw CommandLineError.unexpectedArgument(argument)
+		}
+
+		positionalArguments.append(argument)
+		index += 1
+	}
+
+	guard positionalArguments.count == 2 else {
+		if positionalArguments.count > 2 {
+			throw CommandLineError.unexpectedArgument(positionalArguments[2])
+		}
+		throw CommandLineError.missingArguments
+	}
+
+	userName = userName.trimmingCharacters(in: .whitespacesAndNewlines)
+	guard !userName.isEmpty else {
+		throw CommandLineError.emptyUserName
+	}
+
+	return CommandLineOptions(
+		inputURL: URL(fileURLWithPath: positionalArguments[0]),
+		outputDirectoryURL: URL(fileURLWithPath: positionalArguments[1]),
+		userName: userName
+	)
+}
+
+func printUsage(to stream: UnsafeMutablePointer<FILE> = stderr) {
     let prog = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "ChatExportToLaTeX"
-    fputs("Usage: \(prog) <conversations.json> <output-directory>\n", stderr)
+	fputs(
+		"Usage: \(prog) <export-directory-or-conversations.json> <output-directory> [--user-name <name>]\n",
+		stream
+	)
 }
 
 
@@ -504,20 +1088,43 @@ func printUsage() {
 
 func main() {
     let args = CommandLine.arguments
-    guard args.count >= 3 else {
-        printUsage()
-        exit(1)
-    }
+	if args.contains("--help") || args.contains("-h") {
+		printUsage(to: stdout)
+		return
+	}
 
-    let inputURL = URL(fileURLWithPath: args[1])
-    let outDirPath = args[2]
+	let options: CommandLineOptions
+	do {
+		options = try parseCommandLine(args)
+	} catch {
+		fputs("Error: \(error.localizedDescription)\n", stderr)
+		printUsage()
+		exit(1)
+	}
+
+	let inputURL = options.inputURL
+	let outDirPath = options.outputDirectoryURL.path
     let fm = FileManager.default
     try? fm.createDirectory(atPath: outDirPath, withIntermediateDirectories: true)
 	var mainFiles: [String] = []
 	mainFiles.append(generateMainPreamble())
     do {
-        let convos = try loadConversations(from: inputURL)
+		let export = try loadChatExport(from: inputURL)
+		let convos = export.conversations
 		let mainURL = URL(fileURLWithPath: outDirPath).appendingPathComponent("main.tex")
+		let preparedImages = try prepareImages(
+			for: export,
+			in: options.outputDirectoryURL
+		)
+		if preparedImages.copiedCount > 0 {
+			print("Copied \(preparedImages.copiedCount) image assets into \(outDirPath)/images")
+		}
+		if preparedImages.missingCount > 0 {
+			fputs(
+				"Warning: \(preparedImages.missingCount) supported image assets were not present in the export.\n",
+				stderr
+			)
+		}
         for (index, convo) in convos.enumerated() {
             let titleBase = convo.title ?? "conversation_\(index + 1)"
             //let safe = sanitizeFileName(titleBase)
@@ -525,7 +1132,11 @@ func main() {
             let fileName = String(format: "%04d_%@.tex", index + 1, safe)
             let outURL = URL(fileURLWithPath: outDirPath).appendingPathComponent(fileName)
 			//let mainURL = URL(fileURLWithPath: outDirPath).appendingPathComponent(fileName)
-			let tex = conversationToLaTeX(convo).removingControlCharacters()
+			let tex = conversationToLaTeX(
+				convo,
+				userName: options.userName,
+				resolvedImagePaths: preparedImages.relativePathsByAttachmentID
+			).removingControlCharacters()
             try tex.write(to: outURL, atomically: true, encoding: String.Encoding.utf8)
 			mainFiles.append("\\include{\(fileName.replacingOccurrences(of: ".tex", with: ""))}")
             print("Wrote \(outURL.path)")
@@ -565,4 +1176,3 @@ extension String {
 
 
 //main()
-

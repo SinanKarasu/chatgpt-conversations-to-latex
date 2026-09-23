@@ -4,8 +4,8 @@ Convert exported ChatGPT conversations (JSON) into a LaTeX “book” with one
 section per conversation – plus optional image inclusion – and then on to
 DOCX for editing in Collabora Office or Apple Pages.
 
-This tool takes the `conversations.json` export from ChatGPT, walks all
-messages, escapes them for LaTeX, and writes:
+This tool takes an extracted ChatGPT export directory (or a single conversation
+JSON file), walks all messages, escapes them for LaTeX, and writes:
 
 - `main.tex` – the master LaTeX file
 - `####_<slug>.tex` – one file per conversation, included from `main.tex`
@@ -19,15 +19,17 @@ further editing.
 
 ## Features
 
-- Handles both old and new ChatGPT export formats
+- Handles legacy `conversations.json` exports and manifest-driven,
+  `conversations-###.json` sharded exports
 - Maps roles to friendly headers:
   - `user` → **Dear Chat**
-  - `assistant` → **Dear Sinan**
+  - `assistant` → **Dear User**, or the name supplied with `--user-name`
   - everything else → **Dear Diary**
-- Escapes LaTeX specials, including `$`, so pandoc doesn’t choke on stray math
+- Preserves complete `\(...\)`, `\[...\]`, `$...$`, and `$$...$$` math spans
+- Keeps currency, unmatched dollar signs, inline code, and fenced code out of math mode
 - Emits a `main.tex` with `\include{####_<slug>}` for each conversation
-- Emits LaTeX figures for supported image attachments (`image/png`, `image/jpeg`)
-  and assumes they live under `images/` with sanitized filenames
+- Materializes opaque `.dat` assets from current exports as PNG/JPEG files in
+  the generated `images/` directory and emits corresponding LaTeX figures
 
 See `ChatExport.swift` for the details of the models and LaTeX generation.
 
@@ -46,6 +48,8 @@ The LaTeX preamble uses:
 - `fontspec`
 - `graphicx`
 - `amsmath`, `amssymb`
+- `cancel`
+- `fancyvrb`
 - `geometry`
 - `darkmode` package
 - `texgyretermes` fonts and `NotoColorEmoji` as an emoji fallback
@@ -58,9 +62,28 @@ Make sure those are available in your TeX installation.
 
 ### Option A: Xcode Command Line Tool (recommended for now)
 
-1. In Xcode, create a **Command Line Tool** project (Swift).
-2. Add `ChatExport.swift` and `main.swift` to the target.
-3. Build & run from Xcode, or build and run from Terminal with:
+Build the existing project in Xcode, or from Terminal with:
 
-   ```bash
-   xcodebuild -scheme ChatExportToLaTeX -configuration Release
+```bash
+xcodebuild -project ChatExportToLaTeX.xcodeproj \
+  -scheme ChatExportToLaTeX \
+  -configuration Release
+```
+
+### Option B: Swift Package Manager
+
+Build and run the automated renderer tests with:
+
+```bash
+swift build
+swift test
+```
+
+Run the converter with:
+
+```bash
+swift run ChatExportToLaTeX \
+  /path/to/extracted-export \
+  OutputDirectory \
+  --user-name "Your Name"
+```
