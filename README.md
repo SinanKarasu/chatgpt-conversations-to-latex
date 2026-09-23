@@ -40,7 +40,11 @@ See `ChatExport.swift` for the details of the models and LaTeX generation.
 Dollar-sign math delimiters are ambiguous in exported conversations because
 the same characters are also used for currency, shell variables, and literal
 text. To make future exports easier to convert, add this wording to ChatGPT's
-custom instructions:
+custom instructions. Open **ChatGPT Settings**, select **Personalization**, then
+paste it into the **Custom instructions** field:
+
+**Path:** ChatGPT app menu → **Settings** → **Personalization** →
+**Custom instructions**. In the macOS desktop app, `Command-,` opens Settings.
 
 ```text
 For all LaTeX math in your responses, use \( ... \) for inline math and
