@@ -35,6 +35,24 @@ See `ChatExport.swift` for the details of the models and LaTeX generation.
 
 ---
 
+## Recommended ChatGPT instruction
+
+Dollar-sign math delimiters are ambiguous in exported conversations because
+the same characters are also used for currency, shell variables, and literal
+text. To make future exports easier to convert, add this wording to ChatGPT's
+custom instructions:
+
+```text
+For all LaTeX math in your responses, use \( ... \) for inline math and
+\[ ... \] for display math. Do not use $...$ or $$...$$ math delimiters.
+```
+
+This affects future responses only; it does not rewrite existing conversation
+history. The converter still recognizes all four delimiter forms and protects
+common non-mathematical uses of dollar signs.
+
+---
+
 ## Requirements
 
 - macOS with Swift 5.9+ (or whatever ships with your Xcode)
